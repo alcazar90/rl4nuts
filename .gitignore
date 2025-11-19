@@ -1,0 +1,19 @@
+.DS_Store
+rl4nuts/__init__.py
+
+# Logs
+videos
+wandb
+runs
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.python-version 
+
+# analysis
+notebooks/*
