@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/rl4nut-project.png" alt="RL4NUT Logo - Practical Policy Gradient Implementation Banner" width="800"/>
+  <img src="./assets/images/rl4nut-project.png" alt="RL4NUT - Practical Policy Gradient Implementation Starter Kit" width="650"/>
 </p>
 
 ## Overview
