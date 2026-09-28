@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 import re
 
@@ -58,32 +59,8 @@ class Args:
     exp_name: str = os.path.basename(__file__).rstrip(".py")
     """The name of the experiment."""
 
-    gym_id: str = 'CartPole-v1'
-    """The id of the gym environment to use."""
-
-    num_episodes: int = 1000
-    """The total number of episodes to run."""
-
-    eval_frequency: int = 100
-    """Evaluate every N episodes the agent's performance as average return over args.eval_episodes."""
-
-    eval_episodes: int = 8
-    """The number of episodes to run for each evaluation."""
-
-    learning_rate: float = 2.5e-4
-    """The learning rate of the optimizer."""
-
-    gamma: float = 0.99
-    """The gamma factor for compute the discounted return."""
-
-    centered_returns: bool = False
-    """If toggled, use centered returns, a simple baseline method to reduce variance."""
-
     seed: int = 666
     """The random seed to use for the experiment."""
-
-    total_timesteps: int = 250000
-    """The total timesteps of the experiments."""
 
     torch_deterministic: bool = True
     """If toggled, `torch.backends.cudnn.deterministic=False`."""
@@ -106,13 +83,37 @@ class Args:
     record_video_every_n_episodes: int = 100
     """Record video every n episodes."""
 
+    # Algorithm specific arguments
+    env_id: str = 'CartPole-v1'
+    """The id of the gym environment to use."""
+
+    total_timesteps: int = 500000
+    """The total timesteps of the experiments."""
+
+    learning_rate: float = 2.5e-4
+    """The learning rate of the optimizer."""
+
     num_steps: int = 500
     """Number of steps to run for each environment per update."""
+
+    centered_returns: bool = False
+    """If toggled, use centered returns, a simple baseline method to reduce variance."""
+
+    gamma: float = 0.99
+    """The gamma factor for compute the discounted return."""
+
+    # TODO: change eval on devset frequency to timesteps later
+    eval_frequency: int = 100
+    """Evaluate every N episodes the agent's performance as average return over args.eval_episodes."""
+
+    eval_episodes: int = 8
+    """The number of episodes to run for each evaluation."""
+
 
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    run_name = f"{args.gym_id}_{args.exp_name}_{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}_{args.exp_name}_{args.seed}__{int(time.time())}"
 
     if args.track:
         import wandb
@@ -128,6 +129,8 @@ if __name__ == "__main__":
             monitor_gym=False,
             save_code=True,
         )
+        # Define custom x-axis for videos to use global_step
+        wandb.define_metric("video", step_metric="global_step")
         logger.info(f"Tracking experiment with W&B: {run_name}")
 
     writer = SummaryWriter(f"runs/{run_name}")
@@ -155,7 +158,7 @@ if __name__ == "__main__":
         logger.info("Using CPU for tensor operations.")
 
     # env setup
-    env = gym.make(args.gym_id, render_mode="rgb_array")
+    env = gym.make(args.env_id, render_mode="rgb_array")
     assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     if args.capture_video:
@@ -179,7 +182,7 @@ if __name__ == "__main__":
     observation = env.reset(seed=args.seed)[0]
 
     # Check some environment information
-    logger.info(f"Environment: {args.gym_id}")
+    logger.info(f"Environment: {args.env_id}")
     logger.info(f"-> env.single_observation_space: {env.observation_space.shape}")
     logger.info(f"-> env.single_action_space.n: {env.action_space.n}")
     logger.info(f"-> max episode steps: {env.spec.max_episode_steps}")
@@ -203,7 +206,10 @@ if __name__ == "__main__":
     episode_to_step = {}
 
     # Outer loop = for each episode = experience collection + policy update
-    for i in range(1, args.num_episodes + 1):
+    episode_count = 0
+
+    while global_step < args.total_timesteps:
+        episode_count += 1
         episode_start_time = time.time()
         episodic_length = 0
 
@@ -237,7 +243,7 @@ if __name__ == "__main__":
 
                 # Track episode number to global_step mapping for video logging
                 # Note: episode count starts at 0 in RecordVideo wrapper
-                episode_to_step[i - 1] = global_step
+                episode_to_step[episode_count - 1] = global_step
 
                 # reset environment for next episode and break inner loop for the current episode
                 next_obs = torch.Tensor(env.reset()[0]).to(device)
@@ -247,6 +253,10 @@ if __name__ == "__main__":
 
         # Now the outer loop consume a complete/truncate trajectory to update the parameters, i.e.
         # of the agent for learning from experience
+
+        if global_step >= args.total_timesteps:
+            logger.info(f"Reached timestep budget: {global_step}/{args.total_timesteps}.")
+            # Still complete the update for this episode
 
         # compute discounted returns
         discounted_returns = torch.zeros(episodic_length).to(device)
@@ -264,7 +274,7 @@ if __name__ == "__main__":
         # Compute the loss
         loss = - (logprobs[:episodic_length] * discounted_returns).mean()
 
-        logger.info(f"[Ep {i:4d}] R={episodic_return:7.1f} | L={episodic_length:3d} | Loss={loss.item():7.4f} | G0={discounted_returns[0].item():7.2f} | T(s)={episodic_time:3.2f}")
+        logger.info(f"[Ep {episode_count:4d}] R={episodic_return:7.1f} | L={episodic_length:3d} | Loss={loss.item():7.4f} | G0={discounted_returns[0].item():7.2f} | T(s)={episodic_time:3.2f} | Steps={global_step}/{args.total_timesteps}")
 
         # Update parameters
         optimizer.zero_grad()
@@ -280,7 +290,7 @@ if __name__ == "__main__":
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
         # Evaluate the agent's performance every eval_frequency steps
-        if i % args.eval_frequency == 0:
+        if episode_count % args.eval_frequency == 0:
             eval_returns = []
             eval_lengths = []
             for _ in range(args.eval_episodes):
@@ -311,6 +321,8 @@ if __name__ == "__main__":
             next_obs = torch.Tensor(env.reset()[0]).to(device)
             next_done = torch.zeros(1).to(device)
 
+    logger.info(f"Training completed: {episode_count} episodes, {global_step} timesteps")
+
     # Check whether to log video the video or not in wandb
     if args.track and args.capture_video:
         print("Logging videos to W&B...")
@@ -324,11 +336,21 @@ if __name__ == "__main__":
                     step = episode_to_step.get(episode_num, None)
                     if step is not None:
                         print(f"Logging video {video} to wandb at step {step}")
-                        wandb.log({"video": wandb.Video(os.path.join(video_folder, video), format="mp4")}, step=step)
+                        wandb.log({
+                            "video": wandb.Video(os.path.join(video_folder, video), format="mp4"),
+                            "global_step": step
+                        })
                     else:
                         # Log final video using the last global_step (final episode recorded on env.close())
                         print(f"Logging final video {video} to wandb at step {global_step}")
-                        wandb.log({"video": wandb.Video(os.path.join(video_folder, video), format="mp4")}, step=global_step)
+                        wandb.log({
+                            "video": wandb.Video(os.path.join(video_folder, video), format="mp4"),
+                            "global_step": global_step
+                        })
+
+        # remove video folder to save space
+        shutil.rmtree(video_folder)
+
 
     env.close()
     writer.close()
